@@ -9,8 +9,7 @@ import re
 import sqlite_utils
 import ssl
 import textwrap
-import truststore
-from typing import Any, List, Dict, Optional, Tuple, Type
+from typing import Any, List, Dict, Optional, Tuple, Type, Union, Mapping, Callable
 import os
 import threading
 import time
@@ -118,6 +117,20 @@ class _LogTransport(httpx.BaseTransport):
         )
 
 
+class _AsyncLogTransport(httpx.AsyncBaseTransport):
+    def __init__(self, transport: httpx.AsyncBaseTransport):
+        self.transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self.transport.handle_async_request(request)
+        return _LogResponse(
+            status_code=response.status_code,
+            headers=response.headers,
+            stream=response.stream,
+            extensions=response.extensions,
+        )
+
+
 def _no_accept_encoding(request: httpx.Request):
     request.headers.pop("accept-encoding", None)
 
@@ -149,41 +162,43 @@ def _log_response(response: httpx.Response):
     click.echo("  Body:", err=True)
 
 
+EventHooks = Mapping[str, list[Callable[..., Any]]]
+HOOKS: EventHooks = {
+    "request": [_no_accept_encoding],
+    "response": [_log_response],
+}
+
+
 def create_http_client(
-    native: bool, 
-    cafile: Optional[str] = None, 
-    show_response: Optional[str] = None
-) -> httpx.Client:
-    """
-    Creates an httpx client with logging and SSL verification.
+    async_: bool,
+    native: bool,
+    cafile: Optional[str] = None,
+    show_response: Optional[str] = None,
+) -> Union[httpx.Client, httpx.AsyncClient]:
+    # verify object
+    verify: Union[bool, ssl.SSLContext] = (
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if native
+        else ssl.create_default_context(cafile=cafile) if cafile else True
+    )
 
-    Args:
-    - native (bool): Use the system certificates stores.
-    - cafile (Optional[str]): Path to the SSL certificate file. Defaults to None.
-    - show_response (Optional[str]): Whether to enable logging.
-    
-    Returns:
-    - httpx.Client: Configured HTTP client.
-    """
-    if native:
-        # Use system certificates stores
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        verify = ctx
-    elif cafile:
-        ctx = ssl.create_default_context(cafile=cafile)
-        verify = ctx
+    if async_:
+        a_tx: httpx.AsyncBaseTransport = httpx.AsyncHTTPTransport(verify=verify)
+        if show_response:
+            a_tx = _AsyncLogTransport(a_tx)
+        return httpx.AsyncClient(
+            transport=a_tx,
+            event_hooks=HOOKS if show_response else None,
+        )
     else:
-        verify = True
+        s_tx: httpx.BaseTransport = httpx.HTTPTransport(verify=verify)
+        if show_response:
+            s_tx = _LogTransport(s_tx)
+        return httpx.Client(
+            transport=s_tx,
+            event_hooks=HOOKS if show_response else None,
+        )
 
-    transport = httpx.HTTPTransport(verify=verify)
-    event_hook: dict[str, list] = {}
-
-    if show_response:
-        transport = _LogTransport(transport)
-        event_hook["request"] = [_no_accept_encoding]
-        event_hook["response"] = [_log_response]
-
-    return httpx.Client(transport=transport, event_hooks=event_hook)
 
 def simplify_usage_dict(d):
     # Recursively remove keys with value 0 and empty dictionaries

@@ -622,10 +622,12 @@ class _Shared:
         if self.headers:
             kwargs["default_headers"] = self.headers
         http_client = create_http_client(
+            async_,
             os.environ.get("LLM_NATIVE_TLS", "false").lower() == "true",
             os.environ.get("SSL_CERT_FILE", None),
-            os.environ.get("LLM_OPENAI_SHOW_RESPONSES"))
-        kwargs["http_client"]=http_client
+            os.environ.get("LLM_OPENAI_SHOW_RESPONSES"),
+        )
+        kwargs["http_client"] = http_client
         if async_:
             return openai.AsyncOpenAI(**kwargs)
         else:
